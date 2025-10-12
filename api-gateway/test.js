@@ -1,511 +1,404 @@
+#!/usr/bin/env node
+
 const axios = require('axios');
 
-// Configuration
-const GATEWAY_URL = 'http://localhost:5000';
-const AUTH_URL = 'http://localhost:5001';
-const BATTLE_URL = 'http://localhost:5002';
-const AI_URL = 'http://localhost:5003';
+// Configuration - UPDATE THESE WITH YOUR EXISTING USER
+const BASE_URL = 'http://localhost:5000';
+const EXISTING_USER = {
+  email: "rap@example.com",           // ⚠️ CHANGE THIS to your existing user email
+  password: "StrongPass123!"           // ⚠️ CHANGE THIS to your password
+};
 
-// ✅ ENHANCEMENT 1: Add axios timeout configuration
-axios.defaults.timeout = 30000; // 30 seconds
-axios.defaults.validateStatus = (status) => status < 600; // Don't throw on any status
-
-// Test data storage
-let token = '';
-let userId = '';
-let battleId = '';
-const timestamp = Date.now();
-
-// Color codes for terminal output
+// Colors for console output
 const colors = {
-    reset: '\x1b[0m',
-    bright: '\x1b[1m',
-    green: '\x1b[32m',
-    red: '\x1b[31m',
-    yellow: '\x1b[33m',
-    blue: '\x1b[34m',
-    cyan: '\x1b[36m',
-    magenta: '\x1b[35m',
+  reset: '\x1b[0m',
+  bright: '\x1b[1m',
+  green: '\x1b[32m',
+  red: '\x1b[31m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  cyan: '\x1b[36m',
+  magenta: '\x1b[35m'
+};
+
+// Rap verses for 5 rounds
+const RAP_VERSES = [
+  "I step to the mic with surgical precision, My bars cut deep like a lyrical incision, You're facing a veteran with infinite wisdom, While you're still a beginner stuck in your system",
+  
+  "Round two and I'm heating up the stage, My rhymes are timeless like words on a page, You can't compete with my lyrical rage, I'm the master and you're stuck in a cage",
+  
+  "Three rounds in and I'm still on fire, My wordplay elevates you can't go higher, Every bar I spit makes the crowd perspire, While your weak rhymes make the audience tire",
+  
+  "Fourth round hitting and I'm unstoppable force, My flow is natural you sound so forced, I'm running this battle staying on course, While you're falling behind with deep remorse",
+  
+  "Final round five and I seal your fate, My legendary bars you can't replicate, I dominated this battle it's not up for debate, You faced greatness now accept your L mate"
+];
+
+// Global variables
+let authToken = '';
+let battleId = '';
+let testResults = {
+  passed: 0,
+  failed: 0,
+  tests: []
 };
 
 // Helper functions
 function log(message, color = colors.reset) {
-    console.log(`${color}${message}${colors.reset}`);
+  console.log(`${color}${message}${colors.reset}`);
 }
 
-function success(message) {
-    log(`✅ ${message}`, colors.green);
+function logTest(testName, passed, details = '') {
+  const status = passed ? '✅ PASS' : '❌ FAIL';
+  const color = passed ? colors.green : colors.red;
+  log(`${status} - ${testName}`, color);
+  if (details) log(`   ${details}`, colors.cyan);
+  
+  testResults.tests.push({ testName, passed, details });
+  if (passed) testResults.passed++;
+  else testResults.failed++;
 }
 
-function error(message) {
-    log(`❌ ${message}`, colors.red);
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function info(message) {
-    log(`ℹ️  ${message}`, colors.cyan);
-}
-
-function warning(message) {
-    log(`⚠️  ${message}`, colors.yellow);
-}
-
-function section(message) {
-    log(`\n${'='.repeat(70)}`, colors.bright);
-    log(`${message}`, colors.bright);
-    log(`${'='.repeat(70)}`, colors.bright);
-}
-
-function subsection(message) {
-    log(`\n${'─'.repeat(70)}`, colors.blue);
-    log(`${message}`, colors.blue);
-    log(`${'─'.repeat(70)}`, colors.blue);
-}
-
-// ✅ ENHANCEMENT 2: Better error details
-function logError(err) {
-    if (err.response) {
-        error(`Status: ${err.response.status}`);
-        if (err.response.data) {
-            error(`Response: ${JSON.stringify(err.response.data, null, 2)}`);
-        }
-    } else if (err.request) {
-        error('No response received from server');
-        error('Check if service is running');
-    } else {
-        error(`Error: ${err.message}`);
-    }
-}
-
-// Test function wrapper with better error handling
-async function test(name, fn) {
-    try {
-        info(`Testing: ${name}`);
-        await fn();
-        success(`PASSED: ${name}`);
-        return true;
-    } catch (err) {
-        error(`FAILED: ${name}`);
-        logError(err); // ✅ Use enhanced error logging
-        return false;
-    }
-}
-
-// ✅ ENHANCEMENT 3: Pre-flight checks
-async function preFlightChecks() {
-    section('🔍 PRE-FLIGHT CHECKS');
-    const services = [
-        { name: 'Gateway', url: GATEWAY_URL },
-        { name: 'Auth Service', url: AUTH_URL },
-        { name: 'Battle Service', url: BATTLE_URL },
-        { name: 'AI Service', url: AI_URL },
-    ];
-
-    let allHealthy = true;
-
-    for (const service of services) {
-        try {
-            const response = await axios.get(`${service.url}/health`, { timeout: 5000 });
-            if (response.status === 200) {
-                success(`${service.name} is running`);
-            } else {
-                warning(`${service.name} returned status ${response.status}`);
-                allHealthy = false;
-            }
-        } catch (err) {
-            error(`${service.name} is not reachable`);
-            allHealthy = false;
-        }
-    }
-
-    if (!allHealthy) {
-        error('\n⚠️  Some services are not running!');
-        error('Please start all services before running tests.\n');
-        process.exit(1);
-    }
-
-    success('\n✅ All services are running!\n');
-}
-
-// Test Suite
-async function runTests() {
-    const results = {
-        total: 0,
-        passed: 0,
-        failed: 0,
-        startTime: Date.now(),
+async function makeRequest(method, endpoint, data = null, useAuth = false) {
+  try {
+    const config = {
+      method,
+      url: `${BASE_URL}${endpoint}`,
+      headers: {
+        'Content-Type': 'application/json'
+      }
     };
 
-    section('🚀 RAP BATTLE BACKEND - COMPLETE TEST SUITE');
-    log(`Started at: ${new Date().toLocaleString()}`);
-
-    // ==================== PHASE 1: SERVICE HEALTH CHECKS ====================
-    section('📋 PHASE 1: SERVICE HEALTH CHECKS');
-
-    results.total++;
-    if (await test('Gateway Health Check', async () => {
-        const response = await axios.get(`${GATEWAY_URL}/health`);
-        if (response.status !== 200) throw new Error('Gateway not healthy');
-        log(`   Gateway Status: ${response.data.status}`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('All Services Health Check', async () => {
-        const response = await axios.get(`${GATEWAY_URL}/services/health`);
-        if (response.status !== 200) throw new Error('Services not healthy');
-        log(`   Auth Service: ${response.data.services.auth}`, colors.green);
-        log(`   Battle Service: ${response.data.services.battle}`, colors.green);
-        log(`   AI Service: ${response.data.services.ai}`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Auth Service Direct Health', async () => {
-        const response = await axios.get(`${AUTH_URL}/health`);
-        if (response.status !== 200) throw new Error('Auth service not healthy');
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Battle Service Direct Health', async () => {
-        const response = await axios.get(`${BATTLE_URL}/health`);
-        if (response.status !== 200) throw new Error('Battle service not healthy');
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('AI Service Direct Health', async () => {
-        const response = await axios.get(`${AI_URL}/health`);
-        if (response.status !== 200) throw new Error('AI service not healthy');
-        log(`   Available Models: ${response.data.models.join(', ')}`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    // ==================== PHASE 2: AUTHENTICATION TESTS ====================
-    section('📋 PHASE 2: AUTHENTICATION TESTS');
-
-    results.total++;
-    if (await test('User Registration (via Gateway)', async () => {
-        const response = await axios.post(`${GATEWAY_URL}/api/auth/register`, {
-            username: `testuser${timestamp}`,
-            email: `test${timestamp}@example.com`,
-            password: 'password123',
-        });
-        if (response.status !== 201) throw new Error('Registration failed');
-        token = response.data.data.token;
-        userId = response.data.data._id;
-        log(`   Username: ${response.data.data.username}`, colors.green);
-        log(`   Email: ${response.data.data.email}`, colors.green);
-        log(`   User ID: ${userId}`, colors.green);
-        log(`   Token: ${token.substring(0, 20)}...`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('User Login (via Gateway)', async () => {
-        const response = await axios.post(`${GATEWAY_URL}/api/auth/login`, {
-            email: `test${timestamp}@example.com`,
-            password: 'password123',
-        });
-        if (response.status !== 200) throw new Error('Login failed');
-        log(`   Login successful for: ${response.data.data.username}`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Get User Profile (Protected Route)', async () => {
-        const response = await axios.get(`${GATEWAY_URL}/api/auth/me`, {
-            headers: { Authorization: `Bearer ${token}` },
-        });
-        if (response.status !== 200) throw new Error('Failed to get profile');
-        log(`   Profile Email: ${response.data.data.email}`, colors.green);
-        log(`   Total Battles: ${response.data.data.stats.totalBattles}`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Invalid Login Credentials', async () => {
-        const response = await axios.post(`${GATEWAY_URL}/api/auth/login`, {
-            email: `test${timestamp}@example.com`,
-            password: 'wrongpassword',
-        });
-        if (response.status !== 401) {
-            throw new Error('Should have returned 401');
-        }
-        log(`   Correctly rejected invalid credentials`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Protected Route Without Token', async () => {
-        const response = await axios.get(`${GATEWAY_URL}/api/auth/me`);
-        if (response.status !== 401) {
-            throw new Error('Should have returned 401');
-        }
-        log(`   Correctly rejected request without token`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    // ==================== PHASE 3: AI SERVICE TESTS ====================
-    section('📋 PHASE 3: AI SERVICE TESTS');
-
-    results.total++;
-    if (await test('AI Generation with Groq (via Gateway)', async () => {
-        const response = await axios.post(
-            `${GATEWAY_URL}/api/ai/generate`,
-            {
-                userRap: 'Yo I bring the heat with every single beat',
-                theme: 'freestyle',
-                model: 'groq',
-            },
-            {
-                headers: { Authorization: `Bearer ${token}` },
-            }
-        );
-        if (response.status !== 200) throw new Error('AI generation failed');
-        log(`   Model Used: ${response.data.data.model}`, colors.green);
-        log(`   Theme: ${response.data.data.theme}`, colors.green);
-        log(`   AI Rap Preview: ${response.data.data.aiRap.substring(0, 60)}...`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('AI Generation with Gemini (via Gateway - Optional)', async () => {
-        const response = await axios.post(
-            `${GATEWAY_URL}/api/ai/generate`,
-            {
-                userRap: 'My verses hit harder than a freight train',
-                theme: 'battle',
-                model: 'gemini',
-            },
-            {
-                headers: { Authorization: `Bearer ${token}` },
-            }
-        );
-        // ✅ ENHANCEMENT 4: Better Gemini error handling
-        if (response.status === 200) {
-            log(`   Model Used: ${response.data.data.model}`, colors.green);
-            log(`   AI Rap Preview: ${response.data.data.aiRap.substring(0, 60)}...`, colors.green);
-        } else if (response.status === 500 && response.data.error) {
-            warning(`   Gemini API key not configured (optional)`);
-            return; // Don't throw, just warn
-        } else {
-            throw new Error('Unexpected response');
-        }
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('AI Generation Without User Rap', async () => {
-        const response = await axios.post(
-            `${GATEWAY_URL}/api/ai/generate`,
-            {
-                theme: 'freestyle',
-                model: 'groq',
-            },
-            {
-                headers: { Authorization: `Bearer ${token}` },
-            }
-        );
-        if (response.status !== 400) {
-            throw new Error('Should have returned 400');
-        }
-        log(`   Correctly rejected request without userRap`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    // ==================== PHASE 4: BATTLE SERVICE TESTS ====================
-    section('📋 PHASE 4: BATTLE SERVICE TESTS (FULL INTEGRATION)');
-
-    results.total++;
-    if (await test('Create Battle (Integration: Battle + AI)', async () => {
-        const response = await axios.post(
-            `${GATEWAY_URL}/api/battles`,
-            {
-                userRap: "I'm dropping bars like a meteor shower, my rhymes got power every single hour",
-                theme: 'braggadocio',
-                aiModel: 'groq',
-            },
-            {
-                headers: { Authorization: `Bearer ${token}` },
-            }
-        );
-        if (response.status !== 201) throw new Error('Battle creation failed');
-        battleId = response.data.data._id;
-        log(`   Battle ID: ${battleId}`, colors.green);
-        log(`   User Rap: ${response.data.data.userRap.substring(0, 50)}...`, colors.green);
-        log(`   AI Rap: ${response.data.data.aiRap.substring(0, 50)}...`, colors.green);
-        log(`   Theme: ${response.data.data.theme}`, colors.green);
-        log(`   Model: ${response.data.data.aiModel}`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Get Battle History', async () => {
-        const response = await axios.get(`${GATEWAY_URL}/api/battles`, {
-            headers: { Authorization: `Bearer ${token}` },
-        });
-        if (response.status !== 200) throw new Error('Failed to get battles');
-        log(`   Total Battles: ${response.data.count}`, colors.green);
-        if (response.data.count > 0) {
-            log(`   Latest Battle ID: ${response.data.data[0]._id}`, colors.green);
-        }
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Get Single Battle by ID', async () => {
-        const response = await axios.get(`${GATEWAY_URL}/api/battles/${battleId}`, {
-            headers: { Authorization: `Bearer ${token}` },
-        });
-        if (response.status !== 200) throw new Error('Failed to get battle');
-        log(`   Battle Retrieved: ${response.data.data._id}`, colors.green);
-        log(`   Theme: ${response.data.data.theme}`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Update Battle Score', async () => {
-        const response = await axios.put(
-            `${GATEWAY_URL}/api/battles/${battleId}/score`,
-            {
-                userScore: 9,
-                aiScore: 7,
-            },
-            {
-                headers: { Authorization: `Bearer ${token}` },
-            }
-        );
-        if (response.status !== 200) throw new Error('Failed to update score');
-        log(`   User Score: ${response.data.data.scores.user}`, colors.green);
-        log(`   AI Score: ${response.data.data.scores.ai}`, colors.green);
-        log(`   Winner: ${response.data.data.winner}`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Create Multiple Battles', async () => {
-        const battles = [
-            {
-                userRap: 'First battle testing the flow',
-                theme: 'technical',
-                aiModel: 'groq',
-            },
-            {
-                userRap: 'Second battle bringing the heat',
-                theme: 'battle',
-                aiModel: 'groq',
-            },
-        ];
-
-        for (let i = 0; i < battles.length; i++) {
-            const response = await axios.post(`${GATEWAY_URL}/api/battles`, battles[i], {
-                headers: { Authorization: `Bearer ${token}` },
-            });
-            if (response.status !== 201) throw new Error(`Battle ${i + 1} failed`);
-        }
-        log(`   Created ${battles.length} additional battles`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    // ==================== PHASE 5: ERROR HANDLING TESTS ====================
-    section('📋 PHASE 5: ERROR HANDLING & VALIDATION TESTS');
-
-    results.total++;
-    if (await test('Create Battle Without Auth Token', async () => {
-        const response = await axios.post(`${GATEWAY_URL}/api/battles`, {
-            userRap: 'Testing without token',
-            theme: 'freestyle',
-            aiModel: 'groq',
-        });
-        if (response.status !== 401) {
-            throw new Error('Should have returned 401');
-        }
-        log(`   Correctly rejected unauthorized request`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Create Battle Without User Rap', async () => {
-        const response = await axios.post(
-            `${GATEWAY_URL}/api/battles`,
-            {
-                theme: 'freestyle',
-                aiModel: 'groq',
-            },
-            {
-                headers: { Authorization: `Bearer ${token}` },
-            }
-        );
-        if (response.status !== 400) {
-            throw new Error('Should have returned 400');
-        }
-        log(`   Correctly validated required fields`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Get Non-Existent Battle', async () => {
-        const response = await axios.get(`${GATEWAY_URL}/api/battles/507f1f77bcf86cd799439011`, {
-            headers: { Authorization: `Bearer ${token}` },
-        });
-        if (response.status !== 404 && response.status !== 403) {
-            throw new Error('Should have returned 404 or 403');
-        }
-        log(`   Correctly handled non-existent battle`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    results.total++;
-    if (await test('Register with Duplicate Email', async () => {
-        const response = await axios.post(`${GATEWAY_URL}/api/auth/register`, {
-            username: 'anotheruser',
-            email: `test${timestamp}@example.com`,
-            password: 'password123',
-        });
-        if (response.status !== 400) {
-            throw new Error('Should have returned 400');
-        }
-        log(`   Correctly rejected duplicate email`, colors.green);
-    })) results.passed++; else results.failed++;
-
-    // ==================== FINAL SUMMARY ====================
-    section('📊 TEST SUMMARY');
-
-    const endTime = Date.now();
-    const duration = ((endTime - results.startTime) / 1000).toFixed(2);
-
-    log(`\nTotal Tests: ${results.total}`);
-    success(`Passed: ${results.passed}`);
-    if (results.failed > 0) {
-        error(`Failed: ${results.failed}`);
-    } else {
-        log(`Failed: ${results.failed}`, colors.green);
+    if (useAuth && authToken) {
+      config.headers['Authorization'] = `Bearer ${authToken}`;
     }
 
-    const passRate = ((results.passed / results.total) * 100).toFixed(2);
-    log(`Pass Rate: ${passRate}%`, passRate === '100.00' ? colors.green : colors.yellow);
-    log(`Duration: ${duration}s`, colors.cyan);
-
-    if (results.failed === 0) {
-        section('✅ ALL TESTS PASSED - BACKEND IS READY!');
-        log('\n🎉 Your RAP BATTLE backend is production-ready!', colors.green);
-        log('\n📋 What\'s Working:', colors.cyan);
-        log('  ✓ API Gateway routing to all services', colors.green);
-        log('  ✓ User authentication (register, login, JWT)', colors.green);
-        log('  ✓ Protected routes with middleware', colors.green);
-        log('  ✓ AI rap generation (Groq, Gemini, HuggingFace)', colors.green);
-        log('  ✓ Battle creation with AI integration', colors.green);
-        log('  ✓ Battle history and retrieval', colors.green);
-        log('  ✓ Battle scoring system', colors.green);
-        log('  ✓ Error handling and validation', colors.green);
-        log('  ✓ Rate limiting configured', colors.green);
-        log('\n🚀 Next Steps:', colors.cyan);
-        log('  1. Build the React frontend', colors.blue);
-        log('  2. Connect frontend to Gateway (http://localhost:5000)', colors.blue);
-        log('  3. Deploy to production', colors.blue);
-    } else {
-        section('⚠️  SOME TESTS FAILED');
-        log('\n🔍 Debugging Tips:', colors.yellow);
-        log('  1. Check if all services are running', colors.yellow);
-        log('  2. Verify MongoDB is connected', colors.yellow);
-        log('  3. Check API keys in .env files', colors.yellow);
-        log('  4. Review error messages above', colors.yellow);
+    if (data) {
+      config.data = data;
     }
 
-    log(`\nCompleted at: ${new Date().toLocaleString()}\n`);
-
-    // ✅ ENHANCEMENT 5: Exit with proper code
-    process.exit(results.failed > 0 ? 1 : 0);
+    const response = await axios(config);
+    return { success: true, data: response.data, status: response.status };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data || error.message,
+      status: error.response?.status,
+      fullError: error
+    };
+  }
 }
 
-// Main execution with pre-flight checks
-(async () => {
-    try {
-        await preFlightChecks(); // ✅ Check services before testing
-        await runTests();
-    } catch (err) {
-        error('Fatal error during testing:');
-        console.error(err);
-        process.exit(1);
+// Test functions
+async function testHealthCheck() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 1: HEALTH CHECK', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  const result = await makeRequest('GET', '/health');
+  
+  if (result.success && result.data.success) {
+    logTest('Gateway Health Check', true, `Status: ${result.data.status}, Service: ${result.data.service}`);
+  } else {
+    logTest('Gateway Health Check', false, JSON.stringify(result.error));
+  }
+}
+
+async function testServicesHealth() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 2: ALL SERVICES HEALTH', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  const result = await makeRequest('GET', '/services/health');
+  
+  if (result.success) {
+    logTest('All Services Health Check', true, 'All microservices are running');
+    
+    if (result.data.services) {
+      for (const [serviceName, serviceData] of Object.entries(result.data.services)) {
+        log(`   ${serviceName}: ${serviceData.status}`, colors.cyan);
+      }
     }
-})();
+  } else {
+    logTest('All Services Health Check', false, JSON.stringify(result.error));
+  }
+}
+
+async function testUserLogin() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 3: USER LOGIN', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  log(`\n🔑 Logging in with EXISTING USER...`, colors.yellow);
+  log(`   Email: ${EXISTING_USER.email}`, colors.cyan);
+  log(`   Password: ${EXISTING_USER.password}`, colors.cyan);
+
+  const result = await makeRequest('POST', '/api/auth/login', {
+    email: EXISTING_USER.email,
+    password: EXISTING_USER.password
+  });
+  
+  if (result.success && result.data.token) {
+    authToken = result.data.token;
+    logTest('User Login', true, `Token received (${authToken.substring(0, 20)}...)`);
+    log(`   Username: ${result.data.data?.username || 'N/A'}`, colors.cyan);
+    log(`   User ID: ${result.data.data?._id || 'N/A'}`, colors.cyan);
+  } else {
+    logTest('User Login', false, `Login failed`);
+    log(`\n🔍 Debug Info:`, colors.yellow);
+    log(`   Status Code: ${result.status}`, colors.red);
+    log(`   Error: ${JSON.stringify(result.error, null, 2)}`, colors.red);
+    
+    log(`\n⚠️  TROUBLESHOOTING:`, colors.yellow);
+    log(`   1. Make sure you have an existing user in the database`, colors.cyan);
+    log(`   2. Update EXISTING_USER email and password at the top of this script`, colors.cyan);
+    log(`   3. You can create a user by POSTing to /api/auth/register first`, colors.cyan);
+    
+    throw new Error('Login failed - cannot continue tests');
+  }
+
+  await sleep(1000);
+}
+
+async function testStartBattle() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 4: START BATTLE', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  const result = await makeRequest('POST', '/api/battles/start', {
+    theme: 'freestyle',
+    aiModel: 'groq',
+    maxRounds: 5
+  }, true);
+  
+  if (result.success && result.data.data) {
+    battleId = result.data.data._id;
+    logTest('Start Battle', true, `Battle ID: ${battleId}`);
+    log(`   Theme: ${result.data.data.theme}`, colors.cyan);
+    log(`   AI Model: ${result.data.data.aiModel}`, colors.cyan);
+    log(`   Max Rounds: ${result.data.data.maxRounds}`, colors.cyan);
+  } else {
+    logTest('Start Battle', false, JSON.stringify(result.error));
+    log(`\n🔍 Debug Info:`, colors.yellow);
+    log(`   Status Code: ${result.status}`, colors.red);
+    log(`   Error: ${JSON.stringify(result.error, null, 2)}`, colors.red);
+    throw new Error('Start battle failed - cannot continue');
+  }
+
+  await sleep(1000);
+}
+
+async function testBattleRound(roundNumber, verse) {
+  log('\n' + '='.repeat(60), colors.bright);
+  log(`TEST ${4 + roundNumber}: BATTLE ROUND ${roundNumber}`, colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  log('\n💬 User Rap:', colors.yellow);
+  log(`   ${verse}`, colors.cyan);
+
+  const result = await makeRequest('POST', `/api/battles/${battleId}/continue`, {
+    userRap: verse
+  }, true);
+  
+  if (result.success && result.data.success) {
+    logTest(`Battle Round ${roundNumber}`, true, `Current Round: ${result.data.data.currentRound}/${result.data.data.maxRounds}`);
+    
+    log('\n🎤 AI Response:', colors.magenta);
+    log(`   ${result.data.data.aiResponse}`, colors.cyan);
+    
+    log(`\n📊 Status:`, colors.blue);
+    log(`   Can Continue: ${result.data.data.canContinue}`, colors.cyan);
+    log(`   Message: ${result.data.message}`, colors.cyan);
+  } else {
+    logTest(`Battle Round ${roundNumber}`, false, JSON.stringify(result.error));
+  }
+
+  await sleep(2000);
+}
+
+async function testGetBattleById() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 10: GET BATTLE BY ID', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  const result = await makeRequest('GET', `/api/battles/${battleId}`, null, true);
+  
+  if (result.success && result.data.data) {
+    const battle = result.data.data;
+    logTest('Get Battle By ID', true, `Found battle with ${battle.conversation?.length || 0} conversation entries`);
+    log(`   Status: ${battle.status}`, colors.cyan);
+    log(`   Current Round: ${battle.currentRound}/${battle.maxRounds}`, colors.cyan);
+    log(`   Theme: ${battle.theme}`, colors.cyan);
+  } else {
+    logTest('Get Battle By ID', false, JSON.stringify(result.error));
+  }
+
+  await sleep(1000);
+}
+
+async function testEndBattle() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 11: END BATTLE', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  const result = await makeRequest('POST', `/api/battles/${battleId}/end`, null, true);
+  
+  if (result.success && result.data.data) {
+    const battle = result.data.data;
+    logTest('End Battle', true, `Winner: ${battle.winner || 'Not judged'}`);
+    
+    if (battle.scores) {
+      log('\n🏆 Final Scores:', colors.yellow);
+      log(`   User Score: ${battle.scores.user || 'N/A'}`, colors.cyan);
+      log(`   AI Score: ${battle.scores.ai || 'N/A'}`, colors.cyan);
+    }
+    
+    if (battle.detailedAnalysis) {
+      log('\n📈 Detailed Analysis Available:', colors.blue);
+      log(`   User Analysis: ${battle.detailedAnalysis.userAnalysis ? 'Yes' : 'No'}`, colors.cyan);
+      log(`   AI Analysis: ${battle.detailedAnalysis.aiAnalysis ? 'Yes' : 'No'}`, colors.cyan);
+      log(`   Overall: ${battle.detailedAnalysis.overallAnalysis ? 'Yes' : 'No'}`, colors.cyan);
+    }
+  } else {
+    logTest('End Battle', false, JSON.stringify(result.error));
+  }
+
+  await sleep(1000);
+}
+
+async function testGetAllBattles() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 12: GET ALL BATTLES', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  const result = await makeRequest('GET', '/api/battles?page=1&limit=10', null, true);
+  
+  if (result.success && result.data.data) {
+    logTest('Get All Battles', true, `Retrieved ${result.data.data.length} battles`);
+    log(`   Total Battles: ${result.data.data.length}`, colors.cyan);
+    if (result.data.pagination) {
+      log(`   Page: ${result.data.pagination.page}`, colors.cyan);
+      log(`   Total Pages: ${result.data.pagination.pages}`, colors.cyan);
+    }
+  } else {
+    logTest('Get All Battles', false, JSON.stringify(result.error));
+  }
+
+  await sleep(1000);
+}
+
+async function testGetUserStats() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 13: GET USER STATS', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  const result = await makeRequest('GET', '/api/battles/stats/me', null, true);
+  
+  if (result.success && result.data.data) {
+    const stats = result.data.data;
+    logTest('Get User Stats', true, `Total Battles: ${stats.totalBattles || 0}`);
+    log('\n📊 User Statistics:', colors.yellow);
+    log(`   Total Battles: ${stats.totalBattles || 0}`, colors.cyan);
+    log(`   Wins: ${stats.wins || 0}`, colors.cyan);
+    log(`   Losses: ${stats.losses || 0}`, colors.cyan);
+    log(`   Draws: ${stats.draws || 0}`, colors.cyan);
+    log(`   Win Rate: ${stats.winRate || 0}%`, colors.cyan);
+    log(`   Average Score: ${stats.averageUserScore || 0}`, colors.cyan);
+  } else {
+    logTest('Get User Stats', false, JSON.stringify(result.error));
+  }
+
+  await sleep(1000);
+}
+
+async function testAIServiceDirect() {
+  log('\n' + '='.repeat(60), colors.bright);
+  log('TEST 14: AI SERVICE DIRECT TEST', colors.bright);
+  log('='.repeat(60), colors.bright);
+
+  const result = await makeRequest('GET', '/api/ai/test', null, true);
+  
+  if (result.success) {
+    logTest('AI Service Direct Test', true, 'AI service is responding');
+  } else {
+    logTest('AI Service Direct Test', false, JSON.stringify(result.error));
+  }
+}
+
+// Main execution
+async function runAllTests() {
+  log('\n' + '█'.repeat(60), colors.bright);
+  log('  AI RAP BATTLE - COMPREHENSIVE API TEST SUITE', colors.bright);
+  log('  (Using Existing User - No Registration)', colors.bright);
+  log('█'.repeat(60), colors.bright);
+  log(`\nBase URL: ${BASE_URL}`, colors.yellow);
+  log(`User Email: ${EXISTING_USER.email}`, colors.yellow);
+  log(`Starting tests...\n`, colors.yellow);
+
+  try {
+    // Health checks
+    await testHealthCheck();
+    await testServicesHealth();
+
+    // Login with existing user (NO REGISTRATION)
+    await testUserLogin();
+
+    // Battle flow
+    await testStartBattle();
+
+    // Run 5 rounds of battle
+    for (let i = 0; i < RAP_VERSES.length; i++) {
+      await testBattleRound(i + 1, RAP_VERSES[i]);
+    }
+
+    // Battle queries
+    await testGetBattleById();
+    await testEndBattle();
+    await testGetAllBattles();
+    await testGetUserStats();
+
+    // AI service test
+    await testAIServiceDirect();
+
+    // Final summary
+    log('\n' + '█'.repeat(60), colors.bright);
+    log('  TEST SUMMARY', colors.bright);
+    log('█'.repeat(60), colors.bright);
+    
+    log(`\n✅ Passed: ${testResults.passed}`, colors.green);
+    log(`❌ Failed: ${testResults.failed}`, colors.red);
+    log(`📊 Total: ${testResults.passed + testResults.failed}`, colors.blue);
+    
+    const successRate = ((testResults.passed / (testResults.passed + testResults.failed)) * 100).toFixed(2);
+    log(`\n🎯 Success Rate: ${successRate}%\n`, colors.yellow);
+
+    if (testResults.failed === 0) {
+      log('🎉 ALL TESTS PASSED! 🎉\n', colors.green);
+    } else {
+      log('⚠️  SOME TESTS FAILED - CHECK LOGS ABOVE\n', colors.red);
+    }
+
+  } catch (error) {
+    log(`\n❌ CRITICAL ERROR: ${error.message}\n`, colors.red);
+    console.error(error);
+    
+    // Show helpful debugging info
+    log('\n🔍 TROUBLESHOOTING TIPS:', colors.yellow);
+    log('   1. Ensure all services are running:', colors.cyan);
+    log('      - Gateway: http://localhost:5000', colors.cyan);
+    log('      - Auth Service: http://localhost:5001', colors.cyan);
+    log('      - Battle Service: http://localhost:5002', colors.cyan);
+    log('      - AI Service: http://localhost:5003', colors.cyan);
+    log('   2. Update EXISTING_USER credentials at the top of the script', colors.cyan);
+    log('   3. Check MongoDB is connected', colors.cyan);
+    log('   4. Verify environment variables (.env file)', colors.cyan);
+    log('   5. Check service logs for errors\n', colors.cyan);
+  }
+}
+
+// Run the tests
+runAllTests().catch(console.error);

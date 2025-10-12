@@ -8,4 +8,5 @@ module.exports = {
   huggingfaceApiKey: process.env.HUGGINGFACE_API_KEY,
   defaultModel: process.env.DEFAULT_MODEL || 'groq',
   nodeEnv: process.env.NODE_ENV || 'development',
+  openrouterApiKey: process.env.OPENROUTER_API_KEY,
 };

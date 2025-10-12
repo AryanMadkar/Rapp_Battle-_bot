@@ -1,11 +1,9 @@
-const Groq = require('groq-sdk');
+const axios = require('axios');
 const config = require('../config/env');
-
-const groq = new Groq({ apiKey: config.groqApiKey });
 
 /**
  * Use AI as a judge to analyze and score rap battles with maximum analytical depth
- * Uses DeepSeek V3.1 for enhanced reasoning and analysis
+ * Uses DeepSeek V3.1 via OpenRouter for enhanced reasoning and analysis
  */
 const judgeRapBattle = async (userRap, aiRap, theme) => {
   try {
@@ -130,25 +128,37 @@ Examine these verses with extreme attention to detail:
 
 Think like a PhD in linguistics combined with a battle rap veteran. Provide insights that go beyond surface-level observations. Be fair but brutally honest. Your analysis should teach both rappers something they didn't know about their craft.`;
 
-    const completion = await groq.chat.completions.create({
-      messages: [
-        {
-          role: 'system',
-          content: 'You are an elite rap battle judge with deep analytical capabilities. Respond ONLY with valid JSON matching the exact format specified. Use your maximum reasoning capacity to provide expert-level insights. No additional text outside the JSON.'
-        },
-        {
-          role: 'user',
-          content: judgingPrompt
+    // Make request to OpenRouter API
+    const response = await axios.post(
+      'https://openrouter.ai/api/v1/chat/completions',
+      {
+        model: 'deepseek/deepseek-chat-v3.1:free',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are an elite rap battle judge with deep analytical capabilities. Respond ONLY with valid JSON matching the exact format specified. Use your maximum reasoning capacity to provide expert-level insights. No additional text outside the JSON.'
+          },
+          {
+            role: 'user',
+            content: judgingPrompt
+          }
+        ],
+        temperature: 0.4,
+        max_tokens: 4000,
+        top_p: 0.95,
+        response_format: { type: 'json_object' }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${config.openrouterApiKey}`,
+          'HTTP-Referer': 'https://your-app-url.com', // Optional: Replace with your app URL
+          'X-Title': 'Rap Battle Judge', // Optional: Your app name
+          'Content-Type': 'application/json'
         }
-      ],
-      model: 'deepseek/deepseek-chat-v3.1:free', // DeepSeek V3.1 for maximum analysis
-      temperature: 0.4, // Slightly higher for nuanced analysis while maintaining consistency
-      max_tokens: 4000, // Increased for deeper analysis
-      top_p: 0.95, // High diversity for comprehensive evaluation
-      response_format: { type: 'json_object' }
-    });
+      }
+    );
 
-    const judgmentText = completion.choices[0].message.content;
+    const judgmentText = response.data.choices[0].message.content;
     const judgment = JSON.parse(judgmentText);
 
     // Validate and normalize scores with stricter validation
@@ -195,9 +205,33 @@ Think like a PhD in linguistics combined with a battle rap veteran. Provide insi
       crowdAppeal: judgment.crowdAppeal
     };
   } catch (error) {
-    console.error('Judge service error:', error);
-    console.error('Error details:', error.response?.data || error.message);
-    throw new Error('Failed to judge rap battle: ' + error.message);
+    console.error('OpenRouter Judge service error:', error);
+    
+    // Enhanced error handling for OpenRouter specific errors
+    if (error.response) {
+      console.error('OpenRouter API Error Response:', {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data
+      });
+      
+      // Handle specific error cases
+      if (error.response.status === 401) {
+        throw new Error('OpenRouter API authentication failed. Check your API key.');
+      } else if (error.response.status === 429) {
+        throw new Error('OpenRouter rate limit exceeded. Please try again later.');
+      } else if (error.response.status === 402) {
+        throw new Error('OpenRouter insufficient credits. Please add credits to your account.');
+      } else {
+        throw new Error(`OpenRouter API error: ${error.response.data?.error?.message || error.message}`);
+      }
+    } else if (error.request) {
+      console.error('No response received from OpenRouter:', error.request);
+      throw new Error('Failed to connect to OpenRouter API. Check your internet connection.');
+    } else {
+      console.error('Error details:', error.message);
+      throw new Error('Failed to judge rap battle: ' + error.message);
+    }
   }
 };
 

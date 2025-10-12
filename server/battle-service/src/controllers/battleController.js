@@ -1,10 +1,370 @@
 const Battle = require('../models/Battle');
 const axios = require('axios');
 const config = require('../config/env');
+const { detectEndIntent, detectAIEndIntent } = require('../services/intentDetectionService');
 
 // @desc Create new battle with AI generation and judging
 // @route POST /api/battles
 // @access Private
+
+// @desc Start a new rap battle (create initial battle)
+// @route POST /api/battles/start
+// @access Private
+const startBattle = async (req, res) => {
+  try {
+    const { theme, aiModel, maxRounds } = req.body;
+
+    console.log('🎤 Starting new rap battle...');
+    console.log(`User: ${req.user.username}`);
+    console.log(`Theme: ${theme || 'freestyle'}`);
+    console.log(`AI Model: ${aiModel || 'groq'}`);
+
+    // Create new battle
+    const battle = await Battle.create({
+      user: req.user._id,
+      theme: theme || 'freestyle',
+      aiModel: aiModel || 'groq',
+      maxRounds: maxRounds || 10,
+      status: 'active',
+      conversation: [],
+      currentRound: 0,
+    });
+
+    console.log('✅ Battle created successfully');
+
+    res.status(201).json({
+      success: true,
+      data: battle,
+      message: '🎤 Battle started! Drop your first bars!'
+    });
+  } catch (error) {
+    console.error('❌ Start battle error:', error.message);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to start battle'
+    });
+  }
+};
+
+// @desc Continue battle with user's rap (multi-turn)
+// @route POST /api/battles/:id/continue
+// @access Private
+const continueBattle = async (req, res) => {
+  try {
+    const { userRap } = req.body;
+    const battleId = req.params.id;
+
+    if (!userRap) {
+      return res.status(400).json({
+        success: false,
+        message: 'User rap is required'
+      });
+    }
+
+    if (userRap.trim().length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rap must be at least 10 characters'
+      });
+    }
+
+    // Get battle
+    const battle = await Battle.findById(battleId);
+
+    if (!battle) {
+      return res.status(404).json({
+        success: false,
+        message: 'Battle not found'
+      });
+    }
+
+    // Check ownership
+    if (battle.user.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to continue this battle'
+      });
+    }
+
+    // Check if battle is already completed
+    if (battle.status === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Battle is already completed'
+      });
+    }
+
+    console.log(`🎤 Round ${battle.currentRound + 1} - User's turn`);
+
+    // Increment round
+    battle.currentRound += 1;
+
+    // Check if user wants to end
+    const userWantsToEnd = detectEndIntent(userRap);
+
+    if (userWantsToEnd) {
+      console.log('🏁 User signaled end of battle');
+
+      // Add user's final rap
+      battle.conversation.push({
+        speaker: 'user',
+        text: userRap.trim(),
+        roundNumber: battle.currentRound,
+        timestamp: new Date(),
+      });
+
+      // End battle and judge
+      battle.status = 'completed';
+      battle.completedAt = new Date();
+      await battle.save();
+
+      // Judge the entire battle
+      return await judgeBattle(battle, req, res);
+    }
+
+    // Check if max rounds reached
+    if (battle.currentRound >= battle.maxRounds) {
+      console.log('🏁 Max rounds reached');
+
+      // Add user's final rap
+      battle.conversation.push({
+        speaker: 'user',
+        text: userRap.trim(),
+        roundNumber: battle.currentRound,
+        timestamp: new Date(),
+      });
+
+      battle.status = 'completed';
+      battle.completedAt = new Date();
+      await battle.save();
+
+      // Judge the entire battle
+      return await judgeBattle(battle, req, res);
+    }
+
+    // Add user's rap to conversation
+    battle.conversation.push({
+      speaker: 'user',
+      text: userRap.trim(),
+      roundNumber: battle.currentRound,
+      timestamp: new Date(),
+    });
+
+    await battle.save();
+
+    console.log('🤖 Generating AI response...');
+
+    // Generate AI response with conversation context
+    const aiResponse = await axios.post(
+      `${config.aiServiceUrl}/api/ai/generate-response`,
+      {
+        userRap,
+        theme: battle.theme,
+        model: battle.aiModel,
+        conversationHistory: battle.conversation.slice(-6), // Last 6 exchanges for context
+        roundNumber: battle.currentRound,
+      },
+      {
+        headers: {
+          Authorization: req.headers.authorization,
+        },
+        timeout: 30000,
+      }
+    );
+
+    if (!aiResponse.data.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to generate AI response'
+      });
+    }
+
+    const aiRap = aiResponse.data.data.aiRap;
+    console.log('✅ AI response generated');
+
+    // Check if AI wants to end
+    const aiWantsToEnd = detectAIEndIntent(aiRap);
+
+    // Add AI's rap to conversation
+    battle.conversation.push({
+      speaker: 'ai',
+      text: aiRap,
+      roundNumber: battle.currentRound,
+      timestamp: new Date(),
+    });
+
+    if (aiWantsToEnd) {
+      console.log('🏁 AI signaled end of battle');
+      battle.status = 'completed';
+      battle.completedAt = new Date();
+      await battle.save();
+
+      // Judge the entire battle
+      return await judgeBattle(battle, req, res);
+    }
+
+    await battle.save();
+
+    res.json({
+      success: true,
+      data: {
+        battle,
+        aiResponse: aiRap,
+        currentRound: battle.currentRound,
+        maxRounds: battle.maxRounds,
+        canContinue: battle.currentRound < battle.maxRounds,
+      },
+      message: `Round ${battle.currentRound} complete! ${battle.maxRounds - battle.currentRound} rounds left. Drop your next bars or say "I'm done" to end.`
+    });
+  } catch (error) {
+    console.error('❌ Continue battle error:', error.message);
+
+    if (error.code === 'ECONNREFUSED') {
+      return res.status(503).json({
+        success: false,
+        message: 'AI service is currently unavailable'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to continue battle'
+    });
+  }
+};
+
+// @desc End battle and get judgment
+// @route POST /api/battles/:id/end
+// @access Private
+const endBattle = async (req, res) => {
+  try {
+    const battleId = req.params.id;
+
+    const battle = await Battle.findById(battleId);
+
+    if (!battle) {
+      return res.status(404).json({
+        success: false,
+        message: 'Battle not found'
+      });
+    }
+
+    // Check ownership
+    if (battle.user.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to end this battle'
+      });
+    }
+
+    if (battle.status === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Battle is already completed',
+        data: battle
+      });
+    }
+
+    console.log('🏁 Ending battle manually');
+
+    battle.status = 'completed';
+    battle.completedAt = new Date();
+    await battle.save();
+
+    return await judgeBattle(battle, req, res);
+  } catch (error) {
+    console.error('❌ End battle error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
+
+// Helper function to judge the entire battle
+const judgeBattle = async (battle, req, res) => {
+  try {
+    console.log('⚖️ Judging complete battle...');
+
+    // Compile all user raps
+    const allUserRaps = battle.conversation
+      .filter(entry => entry.speaker === 'user')
+      .map(entry => `Round ${entry.roundNumber}: ${entry.text}`)
+      .join('\n\n');
+
+    // Compile all AI raps
+    const allAIRaps = battle.conversation
+      .filter(entry => entry.speaker === 'ai')
+      .map(entry => `Round ${entry.roundNumber}: ${entry.text}`)
+      .join('\n\n');
+
+    if (!allUserRaps || !allAIRaps) {
+      return res.status(400).json({
+        success: false,
+        message: 'Not enough content to judge. Battle needs at least one exchange from both sides.'
+      });
+    }
+
+    // Call AI judge
+    const judgmentResponse = await axios.post(
+      `${config.aiServiceUrl}/api/ai/judge`,
+      {
+        userRap: allUserRaps,
+        aiRap: allAIRaps,
+        theme: battle.theme,
+      },
+      {
+        headers: {
+          Authorization: req.headers.authorization,
+        },
+        timeout: 45000,
+      }
+    );
+
+    if (!judgmentResponse.data.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to judge battle'
+      });
+    }
+
+    const judgment = judgmentResponse.data.data;
+    console.log('✅ Battle judged successfully');
+    console.log(`Winner: ${judgment.winner.toUpperCase()}`);
+
+    // Update battle with judgment
+    battle.winner = judgment.winner;
+    battle.scores = {
+      user: judgment.userScore,
+      ai: judgment.aiScore,
+    };
+    battle.analysis = {
+      user: judgment.userAnalysis,
+      ai: judgment.aiAnalysis,
+      winReason: judgment.winReason,
+      overallAnalysis: judgment.overallAnalysis,
+    };
+
+    await battle.save();
+
+    res.json({
+      success: true,
+      data: battle,
+      message: `🏆 Battle complete! Winner: ${judgment.winner.toUpperCase()}`,
+      stats: {
+        totalRounds: battle.currentRound,
+        totalExchanges: battle.conversation.length,
+        scoreDifference: Math.abs(judgment.userScore - judgment.aiScore),
+      }
+    });
+  } catch (error) {
+    console.error('❌ Judge battle error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to judge battle'
+    });
+  }
+};
 const createBattle = async (req, res) => {
   try {
     const { userRap, theme, aiModel } = req.body;
@@ -129,7 +489,7 @@ const createBattle = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Create battle error:', error.message);
-    
+
     // Handle specific errors
     if (error.code === 'ECONNREFUSED') {
       return res.status(503).json({
@@ -389,17 +749,17 @@ const getUserStats = async (req, res) => {
 
     if (battles.length > 0) {
       stats.winRate = ((stats.wins / battles.length) * 100).toFixed(2);
-      
+
       const validBattles = battles.filter(b => b.scores.user && b.scores.ai);
       if (validBattles.length > 0) {
         stats.averageUserScore = (
           validBattles.reduce((sum, b) => sum + b.scores.user, 0) / validBattles.length
         ).toFixed(2);
-        
+
         stats.averageAiScore = (
           validBattles.reduce((sum, b) => sum + b.scores.ai, 0) / validBattles.length
         ).toFixed(2);
-        
+
         stats.highestScore = Math.max(...validBattles.map(b => b.scores.user));
         stats.lowestScore = Math.min(...validBattles.map(b => b.scores.user));
       }
@@ -419,7 +779,9 @@ const getUserStats = async (req, res) => {
 };
 
 module.exports = {
-  createBattle,
+  startBattle,
+  continueBattle,
+  endBattle,
   getBattles,
   getBattleById,
   updateBattleScore,

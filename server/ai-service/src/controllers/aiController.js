@@ -102,10 +102,70 @@ const testAI = async (req, res) => {
     });
   }
 };
+const generateConversationalResponse = async (req, res) => {
+  try {
+    const { userRap, theme, model, conversationHistory, roundNumber } = req.body;
+
+    if (!userRap) {
+      return res.status(400).json({
+        success: false,
+        message: 'User rap is required'
+      });
+    }
+
+    const selectedModel = model || 'groq';
+
+    // Build context-aware prompt with conversation history
+    let contextPrompt = `You are in a rap battle. Theme: ${theme || 'freestyle'}. This is round ${roundNumber || 1}.
+
+`;
+
+    if (conversationHistory && conversationHistory.length > 0) {
+      contextPrompt += `Previous exchanges:\n`;
+      conversationHistory.forEach((entry, index) => {
+        contextPrompt += `Round ${entry.roundNumber} - ${entry.speaker === 'user' ? 'Opponent' : 'You'}: ${entry.text}\n`;
+      });
+      contextPrompt += `\n`;
+    }
+
+    contextPrompt += `Opponent's latest bars:\n${userRap}\n\nNow spit your response! Keep it sharp, aggressive, and no more than 8 bars. Make it hit hard!`;
+
+    let aiRap;
+
+    // Route to appropriate AI service with context
+    switch (selectedModel) {
+      case 'gemini':
+        aiRap = await geminiService.generateRap(contextPrompt, theme);
+        break;
+      case 'huggingface':
+        aiRap = await huggingfaceService.generateRap(contextPrompt, theme);
+        break;
+      case 'groq':
+      default:
+        aiRap = await groqService.generateRap(contextPrompt, theme);
+        break;
+    }
+
+    res.json({
+      success: true,
+      data: {
+        aiRap,
+        model: selectedModel,
+        theme: theme || 'freestyle',
+        roundNumber: roundNumber || 1,
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+};
 
 module.exports = {
   generateRap,
   testAI,
-  judgeRapBattle // Export new function
-
+  judgeRapBattle, // Export new function
+  generateConversationalResponse
 };
