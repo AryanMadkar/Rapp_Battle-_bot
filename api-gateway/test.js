@@ -391,7 +391,7 @@ async function runAllTests() {
     log('   1. Ensure all services are running:', colors.cyan);
     log('      - Gateway: http://localhost:5000', colors.cyan);
     log('      - Auth Service: http://localhost:5001', colors.cyan);
-    log('      - Battle Service: http://localhost:5002', colors.cyan);
+    log('      - Battle Service: https://rapp-battle-bot-aiservice.onrender.com', colors.cyan);
     log('      - AI Service: http://localhost:5003', colors.cyan);
     log('   2. Update EXISTING_USER credentials at the top of the script', colors.cyan);
     log('   3. Check MongoDB is connected', colors.cyan);
